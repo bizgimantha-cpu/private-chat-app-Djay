@@ -46,13 +46,18 @@ app.get("/api/health", (req, res) => res.json({ ok: true }));
 
 app.post("/api/login", async (req, res) => {
     const { username, password } = req.body || {};
-    // Admin login fix: Comparing raw password correctly
-    if (username === ADMIN_USER && ADMIN_PASSWORD !== "CHANGE_ME_NOW" && password === ADMIN_PASSWORD) {
-        req.session.user = { username: ADMIN_USER, role: "admin" }; 
+    
+    // Direct Admin Login Verification
+    if (username === ADMIN_USER && password === ADMIN_PASSWORD) {
+        req.session.user = { username: ADMIN_USER, role: "admin", displayName: "Administrator" }; 
         return res.json({ ok: true, user: req.session.user });
     }
+    
     const u = await one("SELECT * FROM users WHERE username=?", [String(username || "")]);
-    if (!u || u.disabled || !(await bcrypt.compare(password || "", u.password_hash))) return res.status(401).json({ error: "Invalid login" });
+    if (!u || u.disabled || !(await bcrypt.compare(password || "", u.password_hash))) {
+        return res.status(401).json({ error: "Invalid login" });
+    }
+    
     req.session.user = { username: u.username, role: "user", id: u.id, displayName: u.display_name }; 
     res.json({ ok: true, user: req.session.user });
 });
