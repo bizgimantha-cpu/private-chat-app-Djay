@@ -15,7 +15,7 @@ const INVITE_CODE=process.env.INVITE_CODE||"CHANGE_ME_NOW";
 const socketTokens=new Map();
 
 function q(sql,p=[]){return new Promise((res,rej)=>db.all(sql,p,(e,r)=>e?rej(e):res(r)))} 
-function one(sql,p=[]){return new Promise((res,rej)=>db.get(sql,p,(e,r)=>e?rej(e):res(r))}
+function one(sql,p=[]){return new Promise((res,rej)=>db.get(sql,p,(e,r)=>e?rej(e):res(r)));}
 function run(sql,p=[]){return new Promise((res,rej)=>db.run(sql,p,function(e){e?rej(e):res(this)}))}
 (async()=>{
  await run(`CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,username TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,display_name TEXT,disabled INTEGER DEFAULT 0,created_at INTEGER)`);
