@@ -13,8 +13,10 @@ services:
         generateValue: true
       - key: INVITE_CODE
         sync: false
-      - key: DB_PATH
-        value: /var/data/data.sqlite
+      - key: NODE_ENV
+        value: production
+      - key: DATA_DIR
+        value: /var/data
     disk:
       name: private-chat-data
       mountPath: /var/data
