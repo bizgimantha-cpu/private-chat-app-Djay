@@ -24,8 +24,6 @@ const ADMIN_USER = process.env.ADMIN_USER || 'admin';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'CHANGE_ME_NOW';
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 const INVITE_CODE = process.env.INVITE_CODE || 'CHANGE_ME_NOW';
-const ACCESS_PATH = process.env.ACCESS_PATH || crypto.createHash('sha256').update(SESSION_SECRET + ':private-workspace').digest('hex').slice(0, 28);
-const APP_BASE = '/' + ACCESS_PATH;
 const socketTokens = new Map();
 const sockets = new Map(); // username -> Set(socket ids)
 
@@ -41,21 +39,14 @@ function deviceLabel(ua = '') {
   const os = /Windows NT/.test(s) ? 'Windows' : /Mac OS X/.test(s) ? 'macOS' : /Android/.test(s) ? 'Android' : /iPhone|iPad/.test(s) ? 'iOS' : /Linux/.test(s) ? 'Linux' : 'Unknown OS';
   return `${browser} · ${os}`;
 }
-function requireAppPath(req, res, next) {
-  if (req.path === APP_BASE || req.path.startsWith(APP_BASE + '/')) return next();
-  if (req.path === '/socket.io' || req.path === '/api/health') return next();
-  return res.status(404).send('Not found');
-}
 
 (async () => {
   await run(`CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,username TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,display_name TEXT,disabled INTEGER DEFAULT 0,created_at INTEGER,last_login_at INTEGER,last_seen_at INTEGER,last_ip TEXT,device TEXT)`);
   await run(`CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY,from_user TEXT NOT NULL,to_user TEXT NOT NULL,text TEXT,created_at INTEGER)`);
   await run(`CREATE TABLE IF NOT EXISTS uploads(id TEXT PRIMARY KEY,user TEXT,filename TEXT,stored TEXT,created_at INTEGER)`);
-  // Backward-compatible columns for databases made by the earlier starter.
   for (const c of ['last_login_at INTEGER','last_seen_at INTEGER','last_ip TEXT','device TEXT']) {
     try { await run(`ALTER TABLE users ADD COLUMN ${c}`); } catch (_) {}
   }
-  console.log(`Private workspace path: ${APP_BASE}`);
 })().catch(err => console.error('DB init failed', err));
 
 db.run('PRAGMA journal_mode=WAL');
@@ -77,6 +68,9 @@ const uploadDir = path.join(dataDir, 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
 const upload = multer({ dest: uploadDir, limits: { fileSize: 25 * 1024 * 1024 } });
 
+// Serve static frontend files from 'public' folder
+app.use(express.static(path.join(__dirname, 'public')));
+
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
 function auth(req, res, next) { if (!req.session.user) return res.status(401).json({ error: 'Login required' }); next(); }
@@ -88,7 +82,9 @@ app.post('/api/login', async (req, res) => {
     const name = String(username || '').trim();
     const ip = getClientIp(req);
     const device = deviceLabel(req.headers['user-agent']);
-    if (name === ADMIN_USER && password === ADMIN_PASSWORD && ADMIN_PASSWORD !== 'CHANGE_ME_NOW') {
+    
+    // Admin login fix
+    if (name === ADMIN_USER && password === ADMIN_PASSWORD) {
       req.session.user = { username: ADMIN_USER, role: 'admin', displayName: 'Administrator' };
       return req.session.save(() => res.json({ ok: true, user: req.session.user }));
     }
@@ -101,7 +97,7 @@ app.post('/api/login', async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Login failed' }); }
 });
 
-app.get('/api/me', auth, async (req, res) => res.json({ user: req.session.user, appPath: APP_BASE }));
+app.get('/api/me', auth, async (req, res) => res.json({ user: req.session.user }));
 app.get('/api/socket-token', auth, (req, res) => {
   const t = crypto.randomBytes(32).toString('hex');
   socketTokens.set(t, { user: req.session.user, expires: Date.now() + 60000 });
@@ -132,7 +128,7 @@ app.patch('/api/users/:username', auth, admin, async (req, res) => {
 
 app.post('/api/invite/register', async (req, res) => {
   const { inviteCode, username, password, displayName } = req.body || {};
-  if (!INVITE_CODE || INVITE_CODE === 'CHANGE_ME_NOW' || inviteCode !== INVITE_CODE) return res.status(403).json({ error: 'Invalid invite' });
+  if (!INVITE_CODE || inviteCode !== INVITE_CODE) return res.status(403).json({ error: 'Invalid invite' });
   const name = String(username || '').trim();
   if (!/^[a-zA-Z0-9_.-]{2,40}$/.test(name) || String(password || '').length < 8) return res.status(400).json({ error: 'Invalid username or password' });
   try {
@@ -175,10 +171,10 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
   const stored = id + ext;
   fs.renameSync(req.file.path, path.join(uploadDir, stored));
   await run('INSERT INTO uploads VALUES(?,?,?,?,?)', [id, req.session.user.username, req.file.originalname, stored, Date.now()]);
-  res.json({ id, url: `${APP_BASE}/files/${stored}`, filename: req.file.originalname });
+  res.json({ id, url: `/files/${stored}`, filename: req.file.originalname });
 });
 
-app.get(APP_BASE + '/files/:name', auth, (req, res) => res.sendFile(path.join(uploadDir, path.basename(req.params.name))));
+app.get('/files/:name', auth, (req, res) => res.sendFile(path.join(uploadDir, path.basename(req.params.name))));
 
 function emitUser(username, event, payload) {
   for (const id of sockets.get(username) || []) io.to(id).emit(event, payload);
@@ -231,11 +227,9 @@ io.on('connection', async s => {
   });
 });
 
-// Only the opaque access path exposes the application UI. Root deliberately stays generic.
-app.get(APP_BASE, (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
-app.use(APP_BASE, express.static(path.join(__dirname, 'public')));
+// Root route handler and fallback for frontend UI
+app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Private workspace running on port ${PORT}`);
-  console.log(`ACCESS_PATH=${APP_BASE}`);
+  console.log(`Server is running on port ${PORT}`);
 });
